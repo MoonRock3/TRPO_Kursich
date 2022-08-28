@@ -1,4 +1,7 @@
 ﻿using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
 using System.Windows.Forms;
 using Microsoft.Office.Interop.Word;
 using Application = Microsoft.Office.Interop.Word.Application;
@@ -8,7 +11,7 @@ namespace KursTRPO
     partial class MainForm : Form
     {
         #region Поля
-        const string PictureWord = "рисунок";
+        readonly List<string> PictureWords = new List<string> { "рисунок", "рис." }; //только строчными буквами
         string secNum;
         int section;
         int number;
@@ -35,12 +38,30 @@ namespace KursTRPO
                 Cursor = Cursors.Default;
                 return;
             }
+            File.Delete("РезультатНормоконтроля.txt");
+            File.Create("РезультатНормоконтроля.txt").Close();
             CheckPicRefsAndNames(document);
             document.Close();
             wordApp.Quit();
+
+            bool empty = false;
+            using(var reader = new StreamReader("РезультатНормоконтроля.txt"))
+            {
+                if (reader.EndOfStream)
+                    empty = true;
+            }
+            if (empty)
+            {
+                using (StreamWriter writer = new StreamWriter("РезультатНормоконтроля.txt"))
+                {
+                    writer.Write("Ошибки не обнаружены.");
+                }
+            }
+
             MessageBox.Show("Поиск завершён!", "Поиск",
                 MessageBoxButtons.OK, MessageBoxIcon.Asterisk);
             Cursor = Cursors.Default;
+            Process.Start("РезультатНормоконтроля.txt");
         }
         private void CheckPicRefsAndNames(Document document)
         {
@@ -54,11 +75,13 @@ namespace KursTRPO
             prevPicNameNum = new PictureNumber(section, 0);
             foreach (Paragraph item in document.Paragraphs)
             {
+                if (PageNumber(item.Range) < 7)
+                    continue;
                 text = item.Range.Text.ToLower();
-                index = text.IndexOf(PictureWord);
+                index = IndexOfWord(text, out int length);
                 if (index >= 0)
                 {
-                    secNum = text.Substring(index + PictureWord.Length + 1);
+                    secNum = text.Substring(index + length + 1);
                     if (item.Range.ParagraphFormat.Alignment != WdParagraphAlignment.wdAlignParagraphCenter)
                     {
                         if (!CheckRefSequence(item))
@@ -71,6 +94,21 @@ namespace KursTRPO
                 }
             }
         }
+        private int IndexOfWord(string text, out int length)
+        {
+            int index;
+            foreach (var item in PictureWords)
+            {
+                index = text.IndexOf(item);
+                if (index >= 0)
+                {
+                    length = item.Length;
+                    return index;
+                }
+            }
+            length = -1;
+            return -1;
+        }
         private bool CheckNameSequence(Paragraph item)
         {
             try
@@ -79,14 +117,14 @@ namespace KursTRPO
             }
             catch (ArgumentOutOfRangeException)
             {
-                ShowError($"Отсутствует пробел после номера:\n{secNum}!", item.Range);
+                WriteError($"Отсутствует пробел после номера:\n{secNum}!", item.Range);
                 return true;
             }
             if (!GetSecAndNum(item))
                 return true;
             PictureNumber picNameNum = new PictureNumber(section, number);
             if (!prevPicNameNum.IsBefore(picNameNum))
-                if (WarnAndAskToStop($"Название рисунка {secNum} идёт сразу " +
+                if (WriteWarning($"Название рисунка {secNum} идёт сразу " +
                     $"после названия рисунка {prevPicNameNum}!", item.Range))
                     return false;
             prevPicNameNum = picNameNum;
@@ -104,7 +142,7 @@ namespace KursTRPO
             string picName = picNameRange.Text;
             if (!picName.StartsWith("Рисунок "))
             {
-                if (WarnAndAskToStop($"После упоминания рисунка {secNum} отсутствует его название!\n" +
+                if (WriteWarning($"После упоминания рисунка {secNum} отсутствует его название!\n" +
                     $"Название должно начинаться со слова \"Рисунок\" и располагаться на втором абзаце " +
                     $"после упоминания", picNameRange))
                     return true;
@@ -119,20 +157,20 @@ namespace KursTRPO
                 }
                 catch (ArgumentOutOfRangeException)
                 {
-                    ShowError($"Отсутствует пробел после номера:\n{picName}!", item.Range);
+                    WriteError($"Отсутствует пробел после номера:\n{picName}!", item.Range);
                     return true;
                 }
                 if (picNameRange.ParagraphFormat.Alignment != WdParagraphAlignment.wdAlignParagraphCenter)
-                    if (WarnAndAskToStop($"Название рисунка {secNum2} выровнено не по центру!", picNameRange))
+                    if (WriteWarning($"Название рисунка {secNum2} выровнено не по центру!", picNameRange))
                         return false;
                 if (picNameRange.Font.Name != "Times New Roman")
-                    if (WarnAndAskToStop($"Название рисунка {secNum2} не использует шрифт Times New Roman!", picNameRange))
+                    if (WriteWarning($"Название рисунка {secNum2} не использует шрифт Times New Roman!", picNameRange))
                         return false;
                 if (picNameRange.Font.Size != 12)
-                    if (WarnAndAskToStop($"Название рисунка {secNum2} не использует размер шрифта 12 пт!", picNameRange))
+                    if (WriteWarning($"Название рисунка {secNum2} не использует размер шрифта 12 пт!", picNameRange))
                         return false;
                 if (secNum != secNum2)
-                    if (WarnAndAskToStop($"Номер рисунка в названии {secNum2} не совпадает с номером " +
+                    if (WriteWarning($"Номер рисунка в названии {secNum2} не совпадает с номером " +
                         $"при упоминании {secNum}!", picNameRange))
                         return false;
             }
@@ -160,7 +198,7 @@ namespace KursTRPO
                 return true;
             PictureNumber picRefNum = new PictureNumber(section, number);
             if (!prevPicRefNum.IsBefore(picRefNum))
-                if (WarnAndAskToStop($"Упоминание рисунка {secNum} идёт сразу после " +
+                if (WriteWarning($"Упоминание рисунка {secNum} идёт сразу после " +
                     $"упоминания рисунка {prevPicRefNum}!", item.Range))
                     return false;
             prevPicRefNum = picRefNum;
@@ -173,18 +211,18 @@ namespace KursTRPO
                 {
                     if (!int.TryParse(secNum.Substring(0, secNum.IndexOf('.')), out section))
                     {
-                        ShowError($"Не удалось преобразовать символы до точки в число:\n{secNum}", item.Range);
+                        WriteError($"Не удалось преобразовать символы до точки в число:\n{secNum}", item.Range);
                         return false;
                     }
                     if (!int.TryParse(secNum.Substring(secNum.IndexOf('.') + 1), out number))
                     {
-                        ShowError($"Не удалось преобразовать символы после точки в число:\n{secNum}", item.Range);
+                        WriteError($"Не удалось преобразовать символы после точки в число:\n{secNum}", item.Range);
                         return false;
                     }
                 }
                 catch (ArgumentOutOfRangeException)
                 {
-                    ShowError($"Отсутствует точка-разделитель в номере:\n{secNum}!", item.Range);
+                    WriteError($"Отсутствует точка-разделитель в номере:\n{secNum}!", item.Range);
                     return false;
                 }
             else
@@ -192,7 +230,7 @@ namespace KursTRPO
                 section = 0;
                 if (!int.TryParse(secNum, out number))
                 {
-                    ShowError("Не удалось преобразовать символы в число:", item.Range);
+                    WriteError("Не удалось преобразовать символы в число:", item.Range);
                     return false;
                 }
             }
@@ -219,11 +257,23 @@ namespace KursTRPO
         }
         void ShowError(string message) => MessageBox.Show(message, "Ошбика",
                     MessageBoxButtons.OK, MessageBoxIcon.Error);
-        void ShowError(string message, Range range) => MessageBox.Show(message + "\nНомер страницы: " +
-                $"{PageNumber(range)}.", "Ошбика", MessageBoxButtons.OK, MessageBoxIcon.Error);
-        bool WarnAndAskToStop(string message, Range range) => MessageBox.Show($"{message}\n" +
-            $"Номер страницы: {PageNumber(range)}.\nПродолжить поиск?", "Предупреждение", 
-            MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.No;
+        void WriteError(string message, Range range) => 
+            WriteToFile("ОШИБКА:\n" + message + "\nНомер страницы: " +
+                $"{PageNumber(range)}.\n");
+        bool WriteWarning(string message, Range range)
+        {
+            WriteToFile($"ПРЕДУПРЕЖДЕНИЕ:\n{message}\n" +
+            $"Номер страницы: {PageNumber(range)}.\n");
+            return false;
+        }
+
+        void WriteToFile(string toWrite)
+        {
+            using (StreamWriter writer = new StreamWriter("РезультатНормоконтроля.txt", true))
+            {
+                writer.Write(toWrite);
+            }
+        }
         #endregion
     }
 }
